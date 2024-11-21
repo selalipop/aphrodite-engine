@@ -5,6 +5,8 @@ import warnings
 from math import inf
 from typing import Dict, List, Optional, Tuple
 
+import torch
+from loguru import logger
 
 import torch
 import torch.nn as nn
@@ -76,6 +78,7 @@ class Sampler(nn.Module):
         runs. This is possible because sampling logic does not change between
         decodes of the same sequences.
         """
+        logger.info(f"init_sampling_tensors sampler")
         _, vocab_size = logits.shape
 
         # First free any existing stored sampling tensors.
@@ -116,6 +119,7 @@ class Sampler(nn.Module):
             logits: (num_tokens, vocab_size).
             sampling_metadata: Metadata for sampling.
         """
+        logger.info(f"sampler forward")
         assert logits is not None
         _, vocab_size = logits.shape
 
@@ -200,8 +204,8 @@ class Sampler(nn.Module):
                 logits, sampling_tensors.xtc_thresholds,
                 sampling_tensors.xtc_probabilities)
 
-        logger.info(f"do_dry: {do_dry}")
-       
+        logger.info(f"do_dry sampler: {do_dry}")
+        print(f"do_dry sampler print: {do_dry}")
         logits = _apply_dry(
             logits,
             sampling_tensors.prompt_tokens,
@@ -417,13 +421,7 @@ def _apply_min_tokens_penalty(
     assert logits_applied == logits.shape[0]
     return logits
 
-from loguru import logger
 
-import torch
-import logging
-
-# Configure the logger
-logger = logging.getLogger(__name__)
 
 def _apply_dry(
     logits: torch.Tensor,
