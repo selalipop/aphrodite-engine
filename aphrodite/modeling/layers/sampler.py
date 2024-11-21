@@ -5,6 +5,7 @@ import warnings
 from math import inf
 from typing import Dict, List, Optional, Tuple
 
+
 import torch
 import torch.nn as nn
 
@@ -415,6 +416,14 @@ def _apply_min_tokens_penalty(
     assert logits_applied == logits.shape[0]
     return logits
 
+from loguru import logger
+
+import torch
+import logging
+
+# Configure the logger
+logger = logging.getLogger(__name__)
+
 def _apply_dry(
     logits: torch.Tensor,
     input_ids: torch.Tensor,
@@ -431,7 +440,15 @@ def _apply_dry(
     Returns:
         torch.Tensor: Modified logits with DRY penalties applied.
     """
-    for seq_group in sampling_metadata.seq_groups:
+    logger.info("Starting to apply DRY penalty")
+
+    # Counters for tracking events
+    total_sequences_processed = 0
+    total_sequences_skipped = 0
+    total_matches_found = 0
+    total_penalties_applied = 0
+
+    for seq_group_idx, seq_group in enumerate(sampling_metadata.seq_groups):
         seq_ids = seq_group.seq_ids
         sampling_params = seq_group.sampling_params
         sample_indices = seq_group.sample_indices
@@ -442,41 +459,76 @@ def _apply_dry(
         dry_allowed_length = sampling_params.dry_allowed_length
         dry_sequence_breaker_ids = sampling_params.dry_sequence_breaker_ids
 
+        logger.info(f"Processing seq_group {seq_group_idx}")
+        logger.info(f"DRY parameters: dry_multiplier={dry_multiplier}, dry_base={dry_base}, dry_allowed_length={dry_allowed_length}")
+        logger.info(f"dry_sequence_breaker_ids: {dry_sequence_breaker_ids}")
+
         # Skip if DRY is not enabled
         if dry_multiplier == 0.0:
+            logger.info(f"Skipping seq_group {seq_group_idx} because dry_multiplier is 0.0")
             continue
 
         if not seq_group.do_sample:
+            logger.info(f"Skipping seq_group {seq_group_idx} because do_sample is False")
+            continue
+
+        if not sample_indices:
+            logger.info(f"Skipping seq_group {seq_group_idx} because sample_indices is empty")
             continue
 
         start_idx = sample_indices[0]
+        logger.info(f"start_idx for seq_group {seq_group_idx}: {start_idx}")
 
         # For each sequence in the seq_group
         for idx_in_group, seq_id in enumerate(seq_ids):
-
-            # Index into logits and input_ids
+            total_sequences_processed += 1
             idx_in_logits = start_idx + idx_in_group
+            logger.info(f"Processing sequence idx_in_group={idx_in_group}, seq_id={seq_id}, idx_in_logits={idx_in_logits}")
+
+            # Check if idx_in_logits is within bounds
+            if idx_in_logits >= input_ids.size(0):
+                logger.info(f"idx_in_logits {idx_in_logits} is out of bounds for input_ids with size {input_ids.size(0)}")
+                total_sequences_skipped += 1
+                continue
 
             # Retrieve the input_ids and logits for the current sequence
             input_ids_row = input_ids[idx_in_logits]
             logits_row = logits[idx_in_logits]
 
+            # Log shapes and types
+            logger.info(f"input_ids_row shape: {input_ids_row.shape}, dtype: {input_ids_row.dtype}")
+            logger.info(f"logits_row shape: {logits_row.shape}, dtype: {logits_row.dtype}")
+
             # Get the last token
             last_token = input_ids_row[-1].item()
+            logger.info(f"Last token for sequence {seq_id}: {last_token}")
 
             if last_token in dry_sequence_breaker_ids:
+                logger.info(f"Skipping sequence {seq_id} because last_token {last_token} is in dry_sequence_breaker_ids")
+                total_sequences_skipped += 1
+                continue
+
+            # Check if the sequence is too short
+            if input_ids_row.size(0) == 0:
+                logger.info(f"Skipping sequence {seq_id} because input_ids_row is too short (length={input_ids_row.size(0)})")
+                total_sequences_skipped += 1
                 continue
 
             # Find positions where input_ids_row[:-1] == last_token
-            if input_ids_row[:-1].size(0) == 0:
-                continue  # Skip if sequence is too short
-
-            # Convert last_token to tensor for comparison
-            last_token_tensor = torch.tensor([last_token], device=input_ids_row.device, dtype=input_ids_row.dtype)
-            matches = (input_ids_row[:-1] == last_token_tensor)
-
-            # Get the indices of matches
+            matches = (input_ids_row[:-1] == last_token)
             match_positions = matches.nonzero(as_tuple=False).flatten()
+
+            num_matches = match_positions.size(0)
+            total_matches_found += num_matches
+            logger.info(f"Number of matches for last_token in sequence {seq_id}: {num_matches}")
+
+            if num_matches > 0:
+                # Preview the first few match positions
+                preview_matches = match_positions[:min(5, num_matches)].tolist()
+                logger.info(f"First few match positions: {preview_matches}")
+            else:
+                logger.info(f"No matches found for sequence {seq_id}")
+                continue
 
             match_lengths = {}
 
@@ -485,11 +537,13 @@ def _apply_dry(
 
                 # Ensure the next token exists
                 if i + 1 >= input_ids_row.size(0):
+                    logger.info(f"Skipping match at position {i} because i+1 >= input_ids_row.size(0)")
                     continue
 
                 next_token = input_ids_row[i + 1].item()
 
                 if next_token in dry_sequence_breaker_ids:
+                    logger.info(f"Skipping match at position {i} because next_token {next_token} is in dry_sequence_breaker_ids")
                     continue
 
                 # Initialize match length
@@ -508,7 +562,8 @@ def _apply_dry(
                     if token_j != token_k:
                         break  # Tokens do not match
 
-                    if token_j in dry_sequence_breaker_ids:
+                    # Corrected line: check token_k instead of token_j
+                    if token_k in dry_sequence_breaker_ids:
                         break  # Sequence breaker encountered
 
                     match_length += 1
@@ -519,14 +574,34 @@ def _apply_dry(
                 else:
                     match_lengths[next_token] = match_length
 
+            if not match_lengths:
+                logger.info(f"No valid match lengths to apply penalties for sequence {seq_id}")
+                continue
+
+            # Log a preview of match lengths
+            match_lengths_preview = [(token, length) for token, length in list(match_lengths.items())[:5]]
+            logger.info(f"Match lengths for sequence {seq_id}: {match_lengths_preview}")
+
             # Apply penalties to logits
             for token, match_length in match_lengths.items():
                 if match_length >= dry_allowed_length:
                     penalty = dry_multiplier * dry_base ** (match_length - dry_allowed_length)
+                    logger.info(f"Applying penalty to token {token}: penalty={penalty}, match_length={match_length}")
                     # Subtract the penalty from the corresponding logit
                     logits_row[token] -= penalty
+                    total_penalties_applied += 1
+                else:
+                    logger.info(f"No penalty applied to token {token} because match_length={match_length} is less than dry_allowed_length={dry_allowed_length}")
+
+    # Log summary of the process
+    logger.info("Finished applying DRY penalty")
+    logger.info(f"Total sequences processed: {total_sequences_processed}")
+    logger.info(f"Total sequences skipped: {total_sequences_skipped}")
+    logger.info(f"Total matches found: {total_matches_found}")
+    logger.info(f"Total penalties applied: {total_penalties_applied}")
 
     return logits
+
 
 def _apply_top_k_top_p(
     logits: torch.Tensor,
