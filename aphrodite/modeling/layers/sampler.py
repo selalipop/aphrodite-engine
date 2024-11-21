@@ -203,10 +203,7 @@ class Sampler(nn.Module):
             logits = _apply_dry(
                 logits,
                 sampling_tensors.prompt_tokens,
-                sampling_tensors.dry_multipliers,
-                sampling_tensors.dry_bases, 
-                sampling_tensors.dry_allowed_lengths,
-                sampling_tensors.dry_sequence_breaker_ids
+                sampling_metadata
             )
 
         if do_temperatures and do_temp_last:
@@ -421,81 +418,113 @@ def _apply_min_tokens_penalty(
 def _apply_dry(
     logits: torch.Tensor,
     input_ids: torch.Tensor,
-    multipliers: torch.Tensor, 
-    bases: torch.Tensor,
-    allowed_lengths: torch.Tensor,
-    sequence_breakers_ids: torch.Tensor
+    sampling_metadata: SamplingMetadata,
 ) -> torch.Tensor:
     """
-    Apply Exclude Don't Repeat Yourself (DRY) sampling to the logits.
-    Reference: https://github.com/oobabooga/text-generation-webui/pull/5677
-    """
-    
-    # Process each sequence in the batch
-    for i, (input_ids_row, logits_row) in enumerate(zip(input_ids, logits)):
-        # Get the last token
-        last_token = input_ids_row[-1].item()
+    Apply DRY penalty to logits to prevent repetition of sequences.
 
-        # Skip if last token is a sequence breaker
-        if last_token in sequence_breakers_ids:
+    Args:
+        logits (torch.Tensor): Logits tensor of shape [num_sequences, vocab_size].
+        input_ids (torch.Tensor): Input IDs tensor of shape [num_sequences, seq_length].
+        sampling_metadata (SamplingMetadata): Metadata containing sequence groups and sampling parameters.
+
+    Returns:
+        torch.Tensor: Modified logits with DRY penalties applied.
+    """
+    for seq_group in sampling_metadata.seq_groups:
+        seq_ids = seq_group.seq_ids
+        sampling_params = seq_group.sampling_params
+        sample_indices = seq_group.sample_indices
+
+        # Extract DRY parameters
+        dry_multiplier = sampling_params.dry_multiplier
+        dry_base = sampling_params.dry_base
+        dry_allowed_length = sampling_params.dry_allowed_length
+        dry_sequence_breaker_ids = sampling_params.dry_sequence_breaker_ids
+
+        # Skip if DRY is not enabled
+        if dry_multiplier == 0.0:
             continue
 
-        # Find matches of the last token, excluding the last position
-        match_indices = (input_ids_row[:-1] == last_token).nonzero()
+        if not seq_group.do_sample:
+            continue
 
-        # Track max matching sequence length for each potential next token
-        match_lengths = {}
+        start_idx = sample_indices[0]
 
-        # Process each match
-        for idx in match_indices:
-            # Convert to scalar
-            idx = idx.item()
-            
-            # Get the token that followed this match in the input
-            next_token = input_ids_row[idx + 1].item()
+        # For each sequence in the seq_group
+        for idx_in_group, seq_id in enumerate(seq_ids):
 
-            # Skip if next token is a sequence breaker
-            if next_token in sequence_breakers_ids:
+            # Index into logits and input_ids
+            idx_in_logits = start_idx + idx_in_group
+
+            # Retrieve the input_ids and logits for the current sequence
+            input_ids_row = input_ids[idx_in_logits]
+            logits_row = logits[idx_in_logits]
+
+            # Get the last token
+            last_token = input_ids_row[-1].item()
+
+            if last_token in dry_sequence_breaker_ids:
                 continue
 
-            # We found last_token matches at this index, so match length starts
-            # at 1
-            match_length = 1
+            # Find positions where input_ids_row[:-1] == last_token
+            if input_ids_row[:-1].size(0) == 0:
+                continue  # Skip if sequence is too short
 
-            # Try to extend match backwards
-            while True:
-                j = idx - match_length
-                if j < 0:
-                    # Reached start of input
-                    break
+            # Convert last_token to tensor for comparison
+            last_token_tensor = torch.tensor([last_token], device=input_ids_row.device, dtype=input_ids_row.dtype)
+            matches = (input_ids_row[:-1] == last_token_tensor)
 
-                previous_token = input_ids_row[-(match_length + 1)].item()
-                if input_ids_row[j] != previous_token:
-                    # No more matches
-                    break
+            # Get the indices of matches
+            match_positions = matches.nonzero(as_tuple=False).flatten()
 
-                if previous_token in sequence_breakers_ids:
-                    # Hit a sequence breaker
-                    break
+            match_lengths = {}
 
-                match_length += 1
+            for pos in match_positions:
+                i = pos.item()
 
-            # Update max match length for this next token
-            if next_token in match_lengths:
-                match_lengths[next_token] = max(
-                    match_length, match_lengths[next_token])
-            else:
-                match_lengths[next_token] = match_length
+                # Ensure the next token exists
+                if i + 1 >= input_ids_row.size(0):
+                    continue
 
-        # Apply penalties based on match lengths
-        allowed_length = allowed_lengths[i]
-        multiplier = multipliers[i]  
-        base = bases[i]
+                next_token = input_ids_row[i + 1].item()
 
-        for token, match_length in match_lengths.items():
-            if match_length >= allowed_length:
-                penalty = multiplier * (base ** (match_length - allowed_length))
-                logits_row[token] -= penalty
+                if next_token in dry_sequence_breaker_ids:
+                    continue
+
+                # Initialize match length
+                match_length = 1
+
+                # Extend the match backwards
+                while True:
+                    j = i - match_length
+                    k = input_ids_row.size(0) - (match_length + 1)
+                    if j < 0 or k < 0:
+                        break  # Reached the start of the sequence
+
+                    token_j = input_ids_row[j].item()
+                    token_k = input_ids_row[k].item()
+
+                    if token_j != token_k:
+                        break  # Tokens do not match
+
+                    if token_j in dry_sequence_breaker_ids:
+                        break  # Sequence breaker encountered
+
+                    match_length += 1
+
+                # Update the maximum match length for the next token
+                if next_token in match_lengths:
+                    match_lengths[next_token] = max(match_lengths[next_token], match_length)
+                else:
+                    match_lengths[next_token] = match_length
+
+            # Apply penalties to logits
+            for token, match_length in match_lengths.items():
+                if match_length >= dry_allowed_length:
+                    penalty = dry_multiplier * dry_base ** (match_length - dry_allowed_length)
+                    # Subtract the penalty from the corresponding logit
+                    logits_row[token] -= penalty
 
     return logits
 

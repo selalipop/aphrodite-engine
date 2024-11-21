@@ -388,10 +388,6 @@ class SamplingTensors:
     xtc_thresholds: torch.Tensor
     xtc_probabilities: torch.Tensor
     nsigmas: torch.Tensor
-    dry_multipliers: torch.Tensor
-    dry_bases: torch.Tensor
-    dry_allowed_lengths: torch.Tensor
-    dry_sequence_breaker_ids: torch.Tensor
     sampling_seeds: torch.Tensor
     sample_indices: torch.Tensor
     extra_seeds: Optional[torch.Tensor]
@@ -440,10 +436,6 @@ class SamplingTensors:
         nsigmas: List[float] = []
         sampling_seeds: List[List[int]] = []
         sample_indices: List[int] = []
-        dry_multipliers: List[float] = []
-        dry_bases: List[float] = []
-        dry_allowed_lengths: List[int] = []
-        dry_sequence_breaker_ids: List[List[int]] = []
 
         do_penalties = False
         do_temperatures = False
@@ -538,11 +530,6 @@ class SamplingTensors:
             xtc_thresholds += [params.xtc_threshold] * n_seqs
             xtc_probabilities += [params.xtc_probability] * n_seqs
             nsigmas += [params.nsigma] * n_seqs
-            dry_multipliers += [params.dry_multiplier] * n_seqs
-            dry_bases += [params.dry_base] * n_seqs
-            dry_allowed_lengths += [params.dry_allowed_length] * n_seqs
-            dry_sequence_breaker_ids += (
-                [params.dry_sequence_breaker_ids] * n_seqs)
 
             if _USE_TRITON_SAMPLER:
                 if is_prompt:
@@ -590,8 +577,7 @@ class SamplingTensors:
             presence_penalties, frequency_penalties, repetition_penalties,
             tfss, eta_cutoffs, epsilon_cutoffs, typical_ps, smoothing_factors,
             smoothing_curves, xtc_thresholds, xtc_probabilities, nsigmas,
-            dry_multipliers, dry_bases, dry_allowed_lengths,
-            dry_sequence_breaker_ids, sampling_seeds, sample_indices,
+            sampling_seeds, sample_indices,
             prompt_tokens, output_tokens, vocab_size, extra_seeds_to_generate,
             device, dtype)
         return (sampling_tensors, do_penalties, do_temperatures,
@@ -611,9 +597,6 @@ class SamplingTensors:
                    typical_ps: List[float], smoothing_factors: List[float],
                    smoothing_curves: List[float], xtc_thresholds: List[float],
                    xtc_probabilities: List[float], nsigmas: List[float],
-                   dry_multipliers: List[float], dry_bases: List[float],
-                   dry_allowed_lengths: List[int],
-                   dry_sequence_breaker_ids: List[List[int]],
                    sampling_seeds: List[List[int]],
                    sample_indices: List[int], prompt_tokens: List[array],
                    output_tokens: List[array], vocab_size: int,
@@ -750,30 +733,6 @@ class SamplingTensors:
                                  device="cpu",
                                  dtype=dtype,
                                  pin_memory=pin_memory)
-        dry_multipliers_t = torch.tensor(
-            dry_multipliers,
-            device="cpu", 
-            dtype=dtype,
-            pin_memory=pin_memory,
-        )
-        dry_bases_t = torch.tensor(
-            dry_bases,
-            device="cpu",
-            dtype=dtype, 
-            pin_memory=pin_memory,
-        )
-        dry_allowed_lengths_t = torch.tensor(
-            dry_allowed_lengths,
-            device="cpu",
-            dtype=torch.int,
-            pin_memory=pin_memory,
-        )
-        dry_sequence_breakers_t = torch.tensor(
-            dry_sequence_breaker_ids, 
-            device="cpu",
-            dtype=torch.long,
-            pin_memory=pin_memory,
-        )
 
         sample_indices_t = torch.tensor(
             sample_indices,
@@ -832,13 +791,6 @@ class SamplingTensors:
             xtc_probabilities=xtc_probabilities_t.to(device=device,
                                                      non_blocking=True),
             nsigmas=nsigmas_t.to(device=device, non_blocking=True),
-            dry_multipliers=dry_multipliers_t.to(device=device,
-                                                 non_blocking=True),
-            dry_bases=dry_bases_t.to(device=device, non_blocking=True),
-            dry_allowed_lengths=dry_allowed_lengths_t.to(device=device,
-                                                         non_blocking=True),
-            dry_sequence_breaker_ids=dry_sequence_breakers_t.to(device=device,
-                                                                non_blocking=True),
             typical_ps=typical_ps_t.to(device=device, non_blocking=True),
             prompt_tokens=prompt_t.to(device=device, non_blocking=True),
             output_tokens=output_t.to(device=device, non_blocking=True),
