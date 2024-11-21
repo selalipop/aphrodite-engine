@@ -3,6 +3,7 @@ from array import array
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
+from loguru import logger
 import torch
 
 from aphrodite.common.sampling_params import SamplingParams, SamplingType
@@ -494,7 +495,7 @@ class SamplingTensors:
             do_xtc |= params.xtc_probability > _SAMPLING_EPS
             do_nsigmas |= params.nsigma > _SAMPLING_EPS
             do_dry |= params.dry_multiplier > _SAMPLING_EPS
-
+            logger.info(f"do_dry: {do_dry}")
             do_temp_last |= params.temperature_last
 
             is_prompt = seq_group.is_prompt

@@ -200,12 +200,13 @@ class Sampler(nn.Module):
                 logits, sampling_tensors.xtc_thresholds,
                 sampling_tensors.xtc_probabilities)
 
-        if do_dry:
-            logits = _apply_dry(
-                logits,
-                sampling_tensors.prompt_tokens,
-                sampling_metadata
-            )
+        logger.info(f"do_dry: {do_dry}")
+       
+        logits = _apply_dry(
+            logits,
+            sampling_tensors.prompt_tokens,
+            sampling_metadata
+        )
 
         if do_temperatures and do_temp_last:
             _apply_temperatures(logits, sampling_tensors.temperatures,
