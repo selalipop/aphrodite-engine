@@ -430,9 +430,16 @@ def _apply_dry(
     Apply Exclude Don't Repeat Yourself (DRY) sampling to the logits.
     Reference: https://github.com/oobabooga/text-generation-webui/pull/5677
     """
-    
+    # Check if all multipliers are zero
+    if torch.all(multipliers == 0):
+        return logits
+      
     # Process each sequence in the batch
     for i, (input_ids_row, logits_row) in enumerate(zip(input_ids, logits)):
+        multiplier = multipliers[i].item()
+        if multiplier == 0:
+            continue  # Skip processing for this sequence
+          
         # Get the last token
         last_token = input_ids_row[-1].item()
 
