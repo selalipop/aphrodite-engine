@@ -9,7 +9,7 @@ from aphrodite.common.sampling_params import SamplingParams, SamplingType
 from aphrodite.common.sequence import SequenceData, SequenceGroupMetadata
 from aphrodite.common.utils import (PyObjectCache, async_tensor_h2d,
                                     is_pin_memory_available,
-                                    make_tensor_with_pad, maybe_expand_dim)
+                                    make_tensor_with_pad, make_tensor_with_pad_3d, maybe_expand_dim)
 from aphrodite.constants import APHRODITE_TOKEN_ID_ARRAY_TYPE
 from aphrodite.triton_utils.sample import get_num_triton_sampler_splits
 
@@ -393,6 +393,7 @@ class SamplingTensors:
     dry_bases: torch.Tensor
     dry_allowed_lengths: torch.Tensor
     dry_sequence_breaker_ids: torch.Tensor
+    dry_exempt_sequence_ids: torch.Tensor
     skews: torch.Tensor
     sampling_seeds: torch.Tensor
     sample_indices: torch.Tensor
@@ -447,6 +448,7 @@ class SamplingTensors:
         dry_bases: List[float] = []
         dry_allowed_lengths: List[int] = []
         dry_sequence_breaker_ids: List[List[int]] = []
+        dry_exempt_sequence_ids: List[List[List[int]]] = []
         skews: List[float] = []
 
         do_penalties = False
@@ -550,8 +552,8 @@ class SamplingTensors:
             dry_multipliers += [params.dry_multiplier] * n_seqs
             dry_bases += [params.dry_base] * n_seqs
             dry_allowed_lengths += [params.dry_allowed_length] * n_seqs
-            dry_sequence_breaker_ids += (
-                [params.dry_sequence_breaker_ids] * n_seqs)
+            dry_sequence_breaker_ids += [params.dry_sequence_breaker_ids] * n_seqs
+            dry_exempt_sequence_ids += [params.dry_exempt_sequence_ids] * n_seqs
             skews += [params.skew] * n_seqs
 
             if _USE_TRITON_SAMPLER:
@@ -601,7 +603,7 @@ class SamplingTensors:
             no_repeat_ngram_sizes, tfss, eta_cutoffs, epsilon_cutoffs,
             typical_ps, smoothing_factors, smoothing_curves, xtc_thresholds,
             xtc_probabilities, nsigmas, dry_multipliers, dry_bases,
-            dry_allowed_lengths, dry_sequence_breaker_ids, skews,
+            dry_allowed_lengths, dry_sequence_breaker_ids, dry_exempt_sequence_ids, skews,
             sampling_seeds, sample_indices, prompt_tokens, output_tokens,
             vocab_size, extra_seeds_to_generate, device, dtype)
         return (sampling_tensors, do_penalties, do_no_repeat_ngrams,
@@ -626,6 +628,7 @@ class SamplingTensors:
                    dry_multipliers: List[float], dry_bases: List[float],
                    dry_allowed_lengths: List[int],
                    dry_sequence_breaker_ids: List[List[int]],
+                   dry_exempt_sequence_ids: List[List[List[int]]],
                    skews: List[float], sampling_seeds: List[List[int]],
                    sample_indices: List[int], prompt_tokens: List[array],
                    output_tokens: List[array], vocab_size: int,
@@ -792,6 +795,13 @@ class SamplingTensors:
             dtype=torch.long,
             pin_memory=pin_memory,
         )
+        dry_exempt_sequence_ids_t = make_tensor_with_pad_3d(
+            dry_exempt_sequence_ids,
+            -1,
+            device="cpu",
+            dtype=torch.long,
+            pin_memory=pin_memory,
+        )
         skews_t = torch.tensor(
             skews,
             device="cpu",
@@ -864,6 +874,8 @@ class SamplingTensors:
             dry_allowed_lengths=dry_allowed_lengths_t.to(device=device,
                                                          non_blocking=True),
             dry_sequence_breaker_ids=dry_sequence_breakers_t.to(device=device,
+                                                                non_blocking=True),
+            dry_exempt_sequence_ids=dry_exempt_sequence_ids_t.to(device=device,
                                                                 non_blocking=True),
             skews=skews_t.to(device=device, non_blocking=True),
             typical_ps=typical_ps_t.to(device=device, non_blocking=True),

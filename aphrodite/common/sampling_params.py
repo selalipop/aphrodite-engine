@@ -192,6 +192,8 @@ class SamplingParams(
             input into sections where repetition is evaluated separately.
             Common examples are newlines, quotes, and other structural tokens.
             Defaults to None.
+        dry_exempt_sequence_ids: List of token ID sequences that are exempt from
+            the DRY sampling penalty.
         skew: Bias the token selection towards higher or lower probability
             tokens. Defaults to 0 (disabled).
         sampler_priority: A list of integers to control the order in which
@@ -247,6 +249,7 @@ class SamplingParams(
     dry_base: float = 1.75
     dry_allowed_length: int = 2
     dry_sequence_breaker_ids: List[int] = []
+    dry_exempt_sequence_ids: List[List[int]] = []
     skew: float = 0.0
     sampler_priority: Optional[List[int]] = []
     # The below fields are not supposed to be used as an input.
@@ -300,6 +303,7 @@ class SamplingParams(
         "dry_base": 1.75,
         "dry_allowed_length": 2,
         "dry_sequence_breaker_ids": [],
+        "dry_exempt_sequence_ids": [],
         "skew": 0.0,
         "sampler_priority": [],
     }

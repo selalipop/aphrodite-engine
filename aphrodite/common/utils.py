@@ -817,6 +817,54 @@ def make_tensor_with_pad(
 
     return tensor
 
+def make_tensor_with_pad_3d(
+    x: List[List[List[T]]],
+    pad: T,
+    dtype: torch.dtype,
+    *,
+    max_len_inner: Optional[int] = None,
+    max_len_middle: Optional[int] = None,
+    device: Optional[Union[str, torch.device]] = None,
+    pin_memory: bool = False,
+) -> torch.Tensor:
+    """
+    Make a padded tensor from 3D inputs.
+
+    The padding is applied to the end of each inner list until it reaches
+    `max_len_inner`, and to the end of each middle list until it reaches
+    `max_len_middle`.
+    """
+    np_dtype = TORCH_DTYPE_TO_NUMPY_DTYPE[dtype]
+    
+    padded_x_inner = [
+        make_ndarray_with_pad(group, pad, np_dtype, max_len=max_len_inner)
+        for group in x
+    ]
+    
+    if max_len_middle is None:
+        max_len_middle = max(group.shape[0] for group in padded_x_inner) if padded_x_inner else 0
+    
+    padded_x_middle = []
+    for group in padded_x_inner:
+        num_sequences = group.shape[0]
+        if num_sequences < max_len_middle:
+            # Create padding sequences
+            padding_sequences = np.full((max_len_middle - num_sequences, group.shape[1]), pad, dtype=np_dtype)
+            # Append padding sequences to the group
+            group = np.vstack([group, padding_sequences])
+        padded_x_middle.append(group)
+    
+    if padded_x_middle:
+        padded_x = np.stack(padded_x_middle, axis=0)
+    else:
+        padded_x = np.empty((0, 0, 0), dtype=np_dtype)
+    
+    tensor = torch.from_numpy(padded_x).to(device)
+    if pin_memory:
+        tensor = tensor.pin_memory()
+    
+    return tensor
+
 
 def async_tensor_h2d(
     data: list,

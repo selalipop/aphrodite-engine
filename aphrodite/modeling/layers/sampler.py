@@ -254,7 +254,8 @@ class Sampler(nn.Module):
                     sampling_tensors.dry_multipliers,
                     sampling_tensors.dry_bases, 
                     sampling_tensors.dry_allowed_lengths,
-                    sampling_tensors.dry_sequence_breaker_ids)
+                    sampling_tensors.dry_sequence_breaker_ids,
+                    sampling_tensors.dry_exempt_sequence_ids)
 
             elif sampler_id == SamplerID.PENALTIES and do_penalties:
                 if (sampling_metadata.seq_groups and
@@ -615,6 +616,7 @@ def _apply_min_tokens_penalty(
     assert logits_applied == logits.shape[0]
     return logits
 
+
 def _apply_dry(
     logits: torch.Tensor,
     input_token_ids: torch.Tensor,
@@ -622,23 +624,39 @@ def _apply_dry(
     multipliers: torch.Tensor, 
     bases: torch.Tensor,
     allowed_lengths: torch.Tensor,
-    sequence_breakers_ids: torch.Tensor
+    sequence_breakers_ids: torch.Tensor,
+    exempt_sequences: torch.Tensor  # Renamed parameter
 ) -> torch.Tensor:
     """
-    Apply Exclude Don't Repeat Yourself (DRY) sampling to the logits.
+    Apply Exclude Don't Repeat Yourself (DRY) sampling to the logits, with exceptions for exempt sequences.
 
     Reference: https://github.com/oobabooga/text-generation-webui/pull/5677
     """
-    input_ids = torch.cat((input_token_ids, output_token_ids), dim=1)
-    # Don't apply dry penalties if multiplier is 0
+
+    # Don't apply dry penalties if all multipliers are 0
     if torch.all(multipliers == 0):
         return logits
+
     
+    input_ids = torch.cat((input_token_ids, output_token_ids), dim=1)
+    
+    # Convert exempt_sequences tensor to a list of lists, excluding padding (-1)
+    exempt_sequences_list = []
+    for seq in exempt_sequences:
+        # Find indices where seq equals -1
+        pad_indices = (seq == -1).nonzero(as_tuple=True)[0]
+        # Determine the padding index
+        pad_index = pad_indices[0].item() if pad_indices.numel() > 0 else len(seq)
+        # Slice the valid sequence and convert to list
+        valid_seq = seq[:pad_index].tolist()
+        exempt_sequences_list.append(valid_seq)
+
     # Process each sequence in the batch
     for i, (input_ids_row, logits_row) in enumerate(zip(input_ids, logits)):
         multiplier = multipliers[i].item()
         if multiplier == 0:
             continue  # Skip processing for this sequence
+
         # Get the last token
         last_token = input_ids_row[-1].item()
 
@@ -647,16 +665,15 @@ def _apply_dry(
             continue
 
         # Find matches of the last token, excluding the last position
-        match_indices = (input_ids_row[:-1] == last_token).nonzero()
+        match_indices = (input_ids_row[:-1] == last_token).nonzero(as_tuple=True)[0]
 
         # Track max matching sequence length for each potential next token
         match_lengths = {}
 
         # Process each match
         for idx in match_indices:
-            # Convert to scalar
             idx = idx.item()
-            
+
             # Get the token that followed this match in the input
             next_token = input_ids_row[idx + 1].item()
 
@@ -664,11 +681,10 @@ def _apply_dry(
             if next_token in sequence_breakers_ids:
                 continue
 
-            # We found last_token matches at this index, so match length starts
-            # at 1
+            # Initialize match_length
             match_length = 1
 
-            # Try to extend match backwards
+            # Try to extend match backwards up to a maximum of 50 tokens
             while match_length < 50:
                 j = idx - match_length
                 k = len(input_ids_row) - match_length - 1
@@ -686,6 +702,31 @@ def _apply_dry(
 
                 match_length += 1
 
+            # Extract the repeating sequence
+            if match_length > 0:
+                repeating_sequence = input_ids_row[len(input_ids_row) - match_length:].tolist()
+                
+                # Check if the repeating sequence exactly matches any exempt sequence
+                is_exact_exempt = False
+                for exempt_seq in exempt_sequences_list:
+                    if repeating_sequence == exempt_seq:
+                        is_exact_exempt = True
+                        break
+
+                if is_exact_exempt:
+                    continue  # Skip applying penalty for this exempt sequence
+
+                # Check if the repeating sequence is a prefix of any exempt sequence
+                is_prefix_exempt = False
+                for exempt_seq in exempt_sequences_list:
+                    if len(repeating_sequence) < len(exempt_seq):
+                        if exempt_seq[:len(repeating_sequence)] == repeating_sequence:
+                            is_prefix_exempt = True
+                            break
+
+                if is_prefix_exempt:
+                    continue  # Skip applying penalty due to partial overlap with an exempt sequence
+
             # Update max match length for this next token
             if next_token in match_lengths:
                 match_lengths[next_token] = max(
@@ -694,9 +735,9 @@ def _apply_dry(
                 match_lengths[next_token] = match_length
 
         # Apply penalties based on match lengths
-        allowed_length = allowed_lengths[i]
-        multiplier = multipliers[i]  
-        base = bases[i]
+        allowed_length = allowed_lengths[i].item()
+        multiplier = multipliers[i].item()
+        base = bases[i].item()
 
         for token, match_length in match_lengths.items():
             if match_length >= allowed_length:

@@ -155,6 +155,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
     dry_allowed_length: Optional[int] = 2
     dry_sequence_breakers: Optional[List[str]] = Field(
         default=["\n", ":", "\"", "*"])
+    dry_exempt_sequence_ids: Optional[List[List[int]]] = Field(default_factory=list)
     dynatemp_min: Optional[float] = 0.0
     dynatemp_max: Optional[float] = 0.0
     dynatemp_exponent: Optional[float] = 1.0
@@ -275,6 +276,12 @@ class ChatCompletionRequest(OpenAIBaseModel):
                 token_id = tokenizer.encode(f'a{s}')[-1]
                 dry_sequence_breaker_ids.append(token_id)
 
+        dry_exempt_sequence_ids = []
+        if self.dry_exempt_sequence_ids:
+            for s in self.dry_exempt_sequence_ids:
+                token_ids = tokenizer.encode(s)
+                dry_exempt_sequence_ids.append(token_ids)
+
         return SamplingParams(
             n=self.n,
             presence_penalty=self.presence_penalty,
@@ -316,6 +323,7 @@ class ChatCompletionRequest(OpenAIBaseModel):
             dry_base=self.dry_base,
             dry_allowed_length=self.dry_allowed_length,
             dry_sequence_breaker_ids=dry_sequence_breaker_ids,
+            dry_exempt_sequence_ids=dry_exempt_sequence_ids,
             dynatemp_min=self.dynatemp_min,
             dynatemp_max=self.dynatemp_max,
             dynatemp_exponent=self.dynatemp_exponent,
@@ -436,6 +444,7 @@ class CompletionRequest(OpenAIBaseModel):
     dry_allowed_length: Optional[int] = 2
     dry_sequence_breakers: Optional[List[str]] = Field(
         default=["\n", ":", "\"", "*"])
+    dry_exempt_sequence_ids: Optional[List[List[int]]] = Field(default_factory=list)
     dynatemp_min: Optional[float] = 0.0
     dynatemp_max: Optional[float] = 0.0
     dynatemp_exponent: Optional[float] = 1.0
@@ -514,6 +523,12 @@ class CompletionRequest(OpenAIBaseModel):
                 token_id = tokenizer.encode(f'a{s}')[-1]
                 dry_sequence_breaker_ids.append(token_id)
 
+        dry_exempt_sequence_ids = []
+        if self.dry_exempt_sequence_ids:
+            for s in self.dry_exempt_sequence_ids:
+                token_ids = tokenizer.encode(s)
+                dry_exempt_sequence_ids.append(token_ids)
+
         return SamplingParams(
             n=self.n,
             best_of=self.best_of,
@@ -556,6 +571,7 @@ class CompletionRequest(OpenAIBaseModel):
             dry_base=self.dry_base,
             dry_allowed_length=self.dry_allowed_length,
             dry_sequence_breaker_ids=dry_sequence_breaker_ids,
+            dry_exempt_sequence_ids=dry_exempt_sequence_ids,
             dynatemp_min=self.dynatemp_min,
             dynatemp_max=self.dynatemp_max,
             dynatemp_exponent=self.dynatemp_exponent,
@@ -617,6 +633,33 @@ class CompletionRequest(OpenAIBaseModel):
             if not is_list or not all_strings:
                 raise ValueError(
                     "dry_sequence_breakers must be a list of strings or a "
+                    "JSON string representing a list of strings"
+                )
+        
+        return data
+    
+    @model_validator(mode='before')
+    @classmethod
+    def parse_dry_exempt_sequences(cls, data):
+        if 'dry_exempt_sequences' in data:
+            sequences = data['dry_exempt_sequences']
+            if isinstance(sequences, str):
+                try:
+                    # Try to parse as JSON string
+                    data['dry_exempt_sequences'] = json.loads(sequences)
+                except json.JSONDecodeError as e:
+                    raise ValueError(f"Invalid JSON for dry_exempt_sequences:"
+                                     f" {e}") from e
+                
+            # Validate that we now have a list of strings
+            is_list = isinstance(data['dry_exempt_sequences'], list)
+            all_strings = all(
+                isinstance(x, str) 
+                for x in data['dry_exempt_sequences']
+            )
+            if not is_list or not all_strings:
+                raise ValueError(
+                    "dry_exempt_sequences must be a list of strings or a "
                     "JSON string representing a list of strings"
                 )
         
